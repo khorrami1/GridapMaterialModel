@@ -1,3 +1,8 @@
+name = "GridapMaterialModel"
+uuid = "7e7729f8-bfcb-4481-b08c-9aeba9d08f7d"
+version = "0.1.0"
+authors = ["Mohammad <mo.khorrami.70@gmail.com> and contributions"]
+
 [deps]
 ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
 Gridap = "56d4f2e9-7ea1-5844-9cf6-b9c51ca7ce8e"
