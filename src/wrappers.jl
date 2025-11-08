@@ -1,6 +1,4 @@
 
-kroneckarDelta(i, j) = i==j ? 1 : 0
-
 function elastic_tangent(D::Int, E::T, ν::T) where {T}
     λ = E * ν / ((1 + ν) * (1 - 2ν))
     μ = E / (2 * (1 + ν))
@@ -25,3 +23,12 @@ function elastic_tangent(D::Int, E::T, ν::T) where {T}
 
     return SymFourthOrderTensorValue{D,T}(data...)
 end
+
+function dev(S)
+    S - vol(S)
+end
+
+function vol(S)
+    1.0/3.0 * tr(S) * one(S)
+end
+
