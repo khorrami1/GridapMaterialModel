@@ -1,9 +1,10 @@
 module GridapMaterialModel
 
 using Gridap.TensorValues
+using Gridap.Algebra
 using NLsolve
 using Rotations
-import ForwardDiff
+import ForwardDiff as FD
 using StaticArrays
 
 abstract type AbstractMaterial end
