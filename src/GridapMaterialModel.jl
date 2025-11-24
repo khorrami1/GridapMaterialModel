@@ -32,11 +32,13 @@ include("wrappers.jl")
 include("LinearElastic.jl")
 include("J2Plasticity.jl")
 include("Plastic.jl")
+include("GeneralPlastic.jl")
 
 # exporting items
 export initial_material_state, get_cache, material_response
 export elastic_tangent
 export LinearElastic, LinearElasticState
 export J2Plasticity, J2PlasticityState
+export GeneralPlastic, GeneralPlasticState
 
 end

@@ -9,3 +9,4 @@ using StaticArrays
 include("test_wrappers.jl")
 include("test_LinearElastic.jl")
 include("test_J2Plasticity.jl")
+include("test_GeneralPlastic.jl")
