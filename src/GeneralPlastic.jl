@@ -1,99 +1,227 @@
-struct GeneralPlastic{D, T} <: AbstractMaterial 
-    C_elas :: SymFourthOrderTensorValue{D, T}
-    yieldStress :: Function
-    yieldSurface :: Function
+# using Test
+# using LinearAlgebra
+# using StaticArrays
+# using ForwardDiff
+# using Gridap
+# using Gridap.Algebra
+
+# ---------------------------------------------------------------------
+# We use fully qualified Gridap.Algebra methods ("Option B") because
+# this is the safest and avoids namespace/interface extension issues.
+# ---------------------------------------------------------------------
+
+# ---------------------------------------------------------------------
+# Material definition
+# ---------------------------------------------------------------------
+
+struct GeneralPlastic{D,T,YS,YF} <: AbstractMaterial
+    C_elas::SymFourthOrderTensorValue{D,T}
+    yieldStress::YS
+    yieldSurface::YF
 end
 
-struct GeneralPlasticState{D, T} <: AbstractMaterialState
-    λ :: T
-    εp :: SymTensorValue{D, T}
+GeneralPlastic(
+    C_elas::SymFourthOrderTensorValue{D,T},
+    yieldStress,
+    yieldSurface
+) where {D,T} =
+    GeneralPlastic{D,T,typeof(yieldStress),typeof(yieldSurface)}(
+        C_elas, yieldStress, yieldSurface
+    )
+
+struct GeneralPlasticState{D,T} <: AbstractMaterialState
+    λ::T
+    εp::SymTensorValue{D,T}
 end
 
-initial_material_state(::GeneralPlastic{D, T}) where{D, T} = GeneralPlasticState(T(0.0), zero(SymTensorValue{D, T}))
+initial_material_state(::GeneralPlastic{D,T}) where {D,T} =
+    GeneralPlasticState{D,T}(zero(T), zero(SymTensorValue{D,T}))
 
-# struct GeneralPlasticCache{T<:NLsolve.onceDifferentiable} <: AbstractCache
-#     nlsolve_cache :: T
-# end
+# ---------------------------------------------------------------------
+# Small helpers
+# ---------------------------------------------------------------------
 
-# get_n_scalar_equations(::GeneralPlastic{D, T}) where{D,T} = D*(D+1)//2 + 1
+n_statevars(::Val{2}) = 4
+n_statevars(::Val{3}) = 7
 
-# We don't need ResidualGeneralPlastic
-
-function StateToVector(v::SVector{4, T}, r::GeneralPlasticState{2, T}) where{T}
-    # TODO check vector length
-    v[1] .= r.λ
-    view(v, 2:4) .= r.εp.data 
+# Copy state -> vector (mutable vector, not SVector)
+function StateToVector!(v::AbstractVector, s::GeneralPlasticState{2})
+    @assert length(v) == 4
+    v[1] = s.λ
+    v[2] = s.εp.data[1]
+    v[3] = s.εp.data[2]
+    v[4] = s.εp.data[3]
+    return v
 end
 
-function StateToVector(v::SVector{7, T}, r::GeneralPlasticState{3, T}) where{T}
-    # TODO check vector length
-    v[1] .= r.λ
-    view(v, 2:7) .= r.εp.data 
+function StateToVector!(v::AbstractVector, s::GeneralPlasticState{3})
+    @assert length(v) == 7
+    v[1] = s.λ
+    @inbounds for i in 1:6
+        v[i+1] = s.εp.data[i]
+    end
+    return v
 end
 
-function VectorToState(::Type{GeneralPlasticState{2, T}}, v::SVector{4, T}) where{T}
+# Reconstruct state from vector.
+# IMPORTANT for ForwardDiff:
+# use S = eltype(v), NOT the storage type of the material/operator.
+function VectorToState(::Val{2}, v::AbstractVector)
+    @assert length(v) == 4
+    S = eltype(v)
     λ = v[1]
-    εp = SymTensorValue{2, T, 3}(v[2], v[3], v[4])
-    return GeneralPlasticState{2, T}(λ, εp)
+    εp = SymTensorValue{2,S,3}(v[2], v[3], v[4])
+    return GeneralPlasticState{2,S}(λ, εp)
 end
 
-function VectorToState(::Type{GeneralPlasticState{3, T}}, v::SVector{7, T}) where{T}
+function VectorToState(::Val{3}, v::AbstractVector)
+    @assert length(v) == 7
+    S = eltype(v)
     λ = v[1]
-    εp = SymTensorValue{3, T, 6}(v[2], v[3], v[4], v[5], v[6], v[7])
-    return GeneralPlasticState{3, T}(λ, εp)
+    εp = SymTensorValue{3,S,6}(v[2], v[3], v[4], v[5], v[6], v[7])
+    return GeneralPlasticState{3,S}(λ, εp)
 end
 
-mutable struct GenerapPlasticNLOP{D, T} <: NonlinearOperator 
-    material :: GeneralPlastic{D, T}
-    state :: GeneralPlasticState{D, T}
-    ε :: SymTensorValue{D, T}
+# ---------------------------------------------------------------------
+# Nonlinear operator for the local constitutive solve
+# ---------------------------------------------------------------------
+
+mutable struct GeneralPlasticNLOP{D,T,M,S,E} <: NonlinearOperator
+    material::M
+    state::S
+    ε::E
 end
 
-function zero_initial_guess(op::GenerapPlasticNLOP{D, T}) where{D, T}
-    x = allocate_residual(op, T[])
-    fill!(x, zero(eltype(x)))
-    x
+GeneralPlasticNLOP(
+    material::GeneralPlastic{D,T},
+    state::GeneralPlasticState{D,T},
+    ε::SymTensorValue{D,T}
+) where {D,T} =
+    GeneralPlasticNLOP{D,T,typeof(material),typeof(state),typeof(ε)}(
+        material, state, ε
+    )
+
+# ---------------------------------------------------------------------
+# ForwardDiff-safe derivative helpers
+# ---------------------------------------------------------------------
+
+# Gradient of a scalar-valued yield surface f(σ) wrt tensor entries.
+# We rebuild σ from a vector of entries so ForwardDiff can differentiate it.
+
+function yield_surface_gradient(f, σ::SymTensorValue{2})
+    s = SVector(σ.data)
+    g = ForwardDiff.gradient(z -> f(SymTensorValue{2,eltype(z),3}(z...)), s)
+    return SymTensorValue{2,eltype(g),3}(g...)
 end
 
-function allocate_residual(op::GenerapPlasticNLOP{D, T}, x::AbstractVector{T}) where{D, T}
-    similar(x, T)
+function yield_surface_gradient(f, σ::SymTensorValue{3})
+    s = SVector(σ.data)
+    g = ForwardDiff.gradient(z -> f(SymTensorValue{3,eltype(z),6}(z...)), s)
+    return SymTensorValue{3,eltype(g),6}(g...)
 end
 
-function material_response(op::GenerapPlasticNLOP{D,T}, Δt, cache, extras; get_Cep=true) where {D, T}
+# Derivative of yieldStress(λ) wrt λ
+hardening_derivative(f, λ) = ForwardDiff.derivative(f, λ)
 
-    σ_trial = op.material.C_elas ⊙ (ε - op.state.εp)
+# ---------------------------------------------------------------------
+# Gridap nonlinear operator interface (fully qualified methods)
+# ---------------------------------------------------------------------
 
+function Gridap.Algebra.allocate_residual(
+    op::GeneralPlasticNLOP{D,T},
+    x::AbstractVector
+) where {D,T}
+    return zeros(eltype(x), n_statevars(Val(D)))
+end
+
+function Gridap.Algebra.zero_initial_guess(op::GeneralPlasticNLOP{D,T}) where {D,T}
+    x = zeros(T, n_statevars(Val(D)))
+    StateToVector!(x, op.state)
+    return x
+end
+
+function Gridap.Algebra.allocate_jacobian(
+    op::GeneralPlasticNLOP{D,T},
+    x::AbstractVector
+) where {D,T}
+    n = n_statevars(Val(D))
+    return zeros(eltype(x), n, n)
+end
+
+function Gridap.Algebra.residual!(
+    r::AbstractVector{S},
+    op::GeneralPlasticNLOP{D,T},
+    x::AbstractVector{S}
+) where {D,T,S}
+
+    state = VectorToState(Val(D), x)
+
+    σ = op.material.C_elas ⊙ (op.ε - state.εp)
+
+    ∂f∂σ = yield_surface_gradient(op.material.yieldSurface, σ)
+
+    Δλ = state.λ - op.state.λ
+    Rεp = state.εp - op.state.εp - Δλ * ∂f∂σ
+
+    r[1] = op.material.yieldSurface(σ) - op.material.yieldStress(state.λ)
+    r[2:end] .= Rεp.data
+
+    return r
+end
+
+function Gridap.Algebra.jacobian!(
+    J::AbstractMatrix{S},
+    op::GeneralPlasticNLOP{D,T},
+    x::AbstractVector{S}
+) where {D,T,S}
+    f!(r, xx) = Gridap.Algebra.residual!(r, op, xx)
+    y = similar(x)
+    ForwardDiff.jacobian!(J, f!, y, x)
+    return J
+end
+
+# ---------------------------------------------------------------------
+# Material response
+# ---------------------------------------------------------------------
+
+function material_response(
+    op::GeneralPlasticNLOP{D,T},
+    Δt,
+    cache,
+    extras;
+    get_Cep=true
+) where {D,T}
+
+    σ_trial = op.material.C_elas ⊙ (op.ε - op.state.εp)
     Φ = op.material.yieldSurface(σ_trial) - op.material.yieldStress(op.state.λ)
 
-    if Φ <= 0
-        return σ_trial, op.material.C_elas, GeneralPlasticState(op.state.εp, op.state.λ)
-    else
-        nls = NLSolver(show_trace=false, method=:newton)
-        x0 = zero_initial_guess(op)
-        StateToVector(x0, op.state)
-        solve!(x0, nls, op)
-
-        newState = VectorToState(state, x0)
-        σ = op.material.C_elas ⊙ (op.ε - newState.εp)
-        if (get_Cep)
-            ∂f∂σ = grad_wrt_entries(op.material.yieldSurface, σ)
-            H = grad_wrt_entries(op.material.yieldStress, newState.λ)
-            C_f_σ = op.material.C_elas ⊙ ∂f∂σ
-            f_σ_C = ∂f∂σ ⊙ op.material.C_elas
-            C_ep = op.material.C_elas - (C_f_σ ⊗ f_σ_C)/(H + ∂f∂σ ⊙ C_f_σ)
-            return σ, C_ep, newState
-        else
-            return σ, newState
-        end
+    # Elastic step
+    if Φ <= zero(T)
+        return σ_trial,
+               op.material.C_elas,
+               GeneralPlasticState{D,T}(op.state.λ, op.state.εp)
     end
 
-end
+    # Plastic step: solve local nonlinear system
+    nls = NLSolver(show_trace=false, method=:newton)
 
-function residual!(r::AbstractVector{T}, op::GenerapPlasticNLOP{D,T}, x::AbstractVector{T}) where{D, T}
-    state = VectorToState(GeneralPlasticState{D,T}, x)
-    σ = op.material.C_elas ⊙ (op.ε - state.εp)
-    ∂f∂σ = grad_wrt_entries(op.material.yieldSurface, σ)
-    Rεp = state.εp - op.state.εp - (state.λ - op.state.λ)*∂f∂σ
-    r[1] .= op.material.yieldSurface(σ) - op.material.yieldStress(state.λ)
-    r[2:end] .= Rεp.data
+    x0 = Gridap.Algebra.zero_initial_guess(op)
+    cache = solve!(x0, nls, op, cache)
+
+    newState = VectorToState(Val(D), x0)
+    σ = op.material.C_elas ⊙ (op.ε - newState.εp)
+
+    if get_Cep
+        ∂f∂σ = yield_surface_gradient(op.material.yieldSurface, σ)
+        H = hardening_derivative(op.material.yieldStress, newState.λ)
+
+        C_f_σ = op.material.C_elas ⊙ ∂f∂σ
+        f_σ_C = ∂f∂σ ⊙ op.material.C_elas
+
+        C_ep = op.material.C_elas - (C_f_σ ⊗ f_σ_C) / (H + ∂f∂σ ⊙ C_f_σ)
+
+        return σ, C_ep, newState
+    else
+        return σ, newState
+    end
 end

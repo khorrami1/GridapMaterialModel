@@ -39,6 +39,7 @@ export initial_material_state, get_cache, material_response
 export elastic_tangent
 export LinearElastic, LinearElasticState
 export J2Plasticity, J2PlasticityState
-export GeneralPlastic, GeneralPlasticState
+export GeneralPlastic, GeneralPlasticState, GeneralPlasticNLOP
+export NonlinearOperator, NLSolver, solve!, solve
 
 end
